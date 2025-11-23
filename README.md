@@ -13,25 +13,22 @@ cd mqtt-graphite-grafana-stack
 cp config_template.json config.json
 nano config.json  # Edit with your settings (MQTT broker, passwords, etc.)
 
-# 3. Run setup (installs Docker, MQTT bridge, creates directories)
+# 3. Run setup (installs Docker, dependencies, MQTT bridge service, creates directories)
 chmod +x scripts/*.sh
 ./scripts/setup.sh
 
-# 4. Install MQTT bridge as systemd service
-./scripts/install-mqtt-bridge.sh
-
-# 5. Start everything
+# 4. Start everything
 ./scripts/start.sh
 
-# 6. Enable auto-start on boot (optional but recommended)
+# 5. Enable auto-start on boot (optional but recommended)
 ./scripts/enable-autostart.sh
 
-# 7. (Optional) Setup NVMe storage for production
+# 6. (Optional) Setup NVMe storage for production
 sudo ./scripts/setup-nvme.sh
 # Then update base_path in config.json to /mnt/nvme/monitoring-data
 # Re-run: ./scripts/setup.sh && ./scripts/start.sh
 
-# 8. (Optional) Setup automated daily backups
+# 7. (Optional) Setup automated daily backups
 sudo ./scripts/install-backup-service.sh
 ```
 
@@ -79,27 +76,56 @@ Send JSON with optional sensor name for easier identification:
 {
   "sensor_name": "Bedroom Sensor",
   "Temperature": {
-    "timestamp": 1732233600,
+    "ts": 1732233600,
     "unit": "C",
     "min": 12.9,
+    "min_ts": 1732233000,
     "max": 44.1,
+    "max_ts": 1732233200,
     "avg": 22.9
   },
   "Humidity": {
-    "timestamp": 1732233600,
+    "ts": 1732233600,
     "unit": "%",
     "min": 45.2,
+    "min_ts": 1732233000,
     "max": 78.5,
+    "max_ts": 1732233200,
     "avg": 65.0
   }
 }
 ```
 
+**Field descriptions:**
+- `sensor_name` (optional): Friendly name for the sensor
+- `ts` (optional): Main timestamp in UTC (Unix epoch), defaults to current time
+- `unit` (optional): Measurement unit for documentation
+- `min`, `max`, `avg`: Statistical values for the measurement period
+- `min_ts`, `max_ts` (REQUIRED): UTC timestamps when min/max values occurred
+
 **Creates metrics:**
 - By UID: `sensors.home.BEDROOM_001.Temperature.{min,max,avg}`
 - By Name: `sensors.home.bedroom_sensor.Temperature.{min,max,avg}`
 
+**Important notes:**
+- All timestamps must be in UTC (Unix epoch seconds)
+- `min_ts` and `max_ts` are **mandatory** when sending min/max values
+- Multiple sensor types can be included in one message (Temperature, Humidity, Pressure, etc.)
+- Only JSON format is supported
+
 **Configuration:** Edit `topic_prefix` in `config.json` or set `MQTT_TOPIC_PREFIX` in `.env`
+
+### Legacy Binary Format Support
+
+The bridge also supports legacy binary format for backward compatibility with old devices that send data to `/wlabdb/bin`:
+
+- **Topic:** `/wlabdb/bin` (fixed, no prefix applied)
+- **Format:** Binary packets (37 bytes per sample)
+- **Contains:** Temperature and Humidity with min/max/avg and timestamps
+- **Known devices:** Automatically maps UIDs to device names (Rodos, Zlocien, Makro, Krakers)
+- **Metrics:** Creates `monitoring_data.DEVICENAME_UID.{Temperature,Humidity}.{min,max,avg}`
+
+This format is automatically handled - no configuration needed.
 
 ## Management
 

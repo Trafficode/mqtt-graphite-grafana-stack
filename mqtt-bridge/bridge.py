@@ -11,6 +11,7 @@ import json
 import socket
 import logging
 import signal
+import struct
 from datetime import datetime
 from typing import Optional, Dict, Any
 
@@ -74,6 +75,15 @@ class GraphiteClient:
 class MQTTBridge:
     """Bridge MQTT messages to Graphite metrics"""
     
+    # Known legacy device names (UID -> Name mapping)
+    LEGACY_DEVICES = {
+        '110020FF0001': 'Rodos',
+        '31AB0F224FDC': 'Zlocien',
+        '48E729C88B0C': 'Makro',
+        'A020A61259E8': 'Krakers',
+        'F1AB0F224FDC': 'Unknown'
+    }
+    
     def __init__(self, config: Dict[str, Any]):
         self.config = config
         self.graphite = GraphiteClient(
@@ -87,11 +97,14 @@ class MQTTBridge:
         self.topic_prefix = config['mqtt'].get('topic_prefix', '')
         self.topic_pattern = config['mqtt'].get('topic', '+/data')
         
-        # Build full subscription topic
+        # Build full subscription topics
         if self.topic_prefix:
             self.full_topic = f"{self.topic_prefix}/{self.topic_pattern}"
         else:
             self.full_topic = self.topic_pattern
+        
+        # Legacy binary topic is always constant (no prefix)
+        self.legacy_bin_topic = "/wlabdb/bin"
         
         # Set up MQTT callbacks
         self.mqtt_client.on_connect = self.on_connect
@@ -111,6 +124,9 @@ class MQTTBridge:
             logger.info("Connected to MQTT broker")
             client.subscribe(self.full_topic)
             logger.info(f"Subscribed to topic: {self.full_topic}")
+            # Subscribe to legacy binary topic
+            client.subscribe(self.legacy_bin_topic)
+            logger.info(f"Subscribed to legacy topic: {self.legacy_bin_topic}")
         else:
             logger.error(f"Failed to connect to MQTT broker, return code: {rc}")
     
@@ -123,6 +139,12 @@ class MQTTBridge:
         """Callback when message received from MQTT"""
         try:
             topic = msg.topic
+            
+            # Check if this is a legacy binary message
+            if topic == self.legacy_bin_topic:
+                self.parse_legacy_binary(msg.payload)
+                return
+            
             payload = msg.payload.decode('utf-8')
             
             logger.debug(f"Received message on {topic}: {payload}")
@@ -140,6 +162,83 @@ class MQTTBridge:
         except Exception as e:
             logger.error(f"Error processing message from {topic}: {e}", exc_info=True)
     
+    def parse_legacy_binary(self, payload: bytes):
+        """
+        Parse legacy binary format from old devices
+        
+        Binary format (37 bytes per sample):
+        - byte 0: version + sample count
+        - bytes 1-6: device UID (6 bytes, reversed)
+        - bytes 7-14: timestamp (int64, little-endian)
+        - bytes 15-16: temp_act (int16, little-endian, value*10)
+        - bytes 17-18: temp_avg (int16, little-endian, value*10)
+        - bytes 19-20: temp_max (int16, little-endian, value*10)
+        - bytes 21-22: temp_min (int16, little-endian, value*10)
+        - bytes 23-24: temp_max_ts_offset (int16, little-endian)
+        - bytes 25-26: temp_min_ts_offset (int16, little-endian)
+        - byte 27: humidity_act (uint8)
+        - byte 28: humidity_avg (uint8)
+        - byte 29: humidity_max (uint8)
+        - byte 30: humidity_min (uint8)
+        - bytes 31-32: humidity_max_ts_offset (int16, little-endian)
+        - bytes 33-34: humidity_min_ts_offset (int16, little-endian)
+        - bytes 35-36: battery_voltage (int16, little-endian)
+        """
+        try:
+            # Extract number of samples in this packet
+            samples_n = 1 + (payload[0] >> 5)
+            offset = 0
+            version1_len = 37
+            
+            for _ in range(samples_n):
+                if offset + version1_len > len(payload):
+                    logger.warning(f"Incomplete binary packet, skipping remaining samples")
+                    break
+                
+                packet = payload[offset:offset + version1_len]
+                
+                # Parse binary packet
+                uid = "%02X%02X%02X%02X%02X%02X" % (packet[6], packet[5], packet[4], packet[3], packet[2], packet[1])
+                ts = int(struct.unpack('<q', packet[7:15])[0])
+                
+                # Temperature (divide by 10)
+                temp_act = struct.unpack('<h', packet[15:17])[0] / 10.0
+                temp_avg = struct.unpack('<h', packet[17:19])[0] / 10.0
+                temp_max = struct.unpack('<h', packet[19:21])[0] / 10.0
+                temp_min = struct.unpack('<h', packet[21:23])[0] / 10.0
+                temp_max_ts_offset = struct.unpack('<h', packet[23:25])[0]
+                temp_min_ts_offset = struct.unpack('<h', packet[25:27])[0]
+                
+                # Humidity (no division)
+                hum_act = packet[27]
+                hum_avg = packet[28]
+                hum_max = packet[29]
+                hum_min = packet[30]
+                hum_max_ts_offset = struct.unpack('<h', packet[31:33])[0]
+                hum_min_ts_offset = struct.unpack('<h', packet[33:35])[0]
+                
+                # Get device name from known devices
+                device_name = self.LEGACY_DEVICES.get(uid, uid)
+                sensor_key = f"{device_name.upper()}_{uid}"
+                base_path = f"monitoring_data.{sensor_key}"
+                
+                # Send Temperature metrics
+                self.graphite.send_metric(f"{base_path}.Temperature.min", temp_min, ts + temp_min_ts_offset)
+                self.graphite.send_metric(f"{base_path}.Temperature.max", temp_max, ts + temp_max_ts_offset)
+                self.graphite.send_metric(f"{base_path}.Temperature.avg", temp_avg, ts)
+                
+                # Send Humidity metrics
+                self.graphite.send_metric(f"{base_path}.Humidity.min", float(hum_min), ts + hum_min_ts_offset)
+                self.graphite.send_metric(f"{base_path}.Humidity.max", float(hum_max), ts + hum_max_ts_offset)
+                self.graphite.send_metric(f"{base_path}.Humidity.avg", float(hum_avg), ts)
+                
+                logger.info(f"Forwarded legacy binary data from {device_name} ({uid}): 6 metrics")
+                
+                offset += version1_len
+                
+        except Exception as e:
+            logger.error(f"Error parsing legacy binary message: {e}", exc_info=True)
+    
     def parse_message(self, topic: str, payload: str) -> tuple:
         """
         Parse MQTT message and convert to Graphite metric
@@ -151,20 +250,27 @@ class MQTTBridge:
         {
           "sensor_name": "Bedroom Sensor",  # Optional friendly name
           "Temperature": {
-            "timestamp": 1234567890,
+            "ts": 1234567890,         # Main timestamp in UTC (optional, defaults to now)
             "unit": "C",
             "min": 12.9,
+            "min_ts": 1234567800,     # Timestamp when min occurred in UTC (REQUIRED)
             "max": 44.1,
+            "max_ts": 1234567850,     # Timestamp when max occurred in UTC (REQUIRED)
             "avg": 22.9
           },
           "Humidity": {
-            "timestamp": 1234567890,
+            "ts": 1234567890,
             "unit": "%",
             "min": 45.0,
+            "min_ts": 1234567800,     # REQUIRED
             "max": 75.0,
+            "max_ts": 1234567850,     # REQUIRED
             "avg": 60.5
           }
         }
+        
+        All timestamps must be in UTC (Unix epoch seconds).
+        min_ts and max_ts are REQUIRED when min/max values are present.
         
         Creates metrics like: sensors.home.BEDROOM_001.Temperature.min
         With sensor_name, also creates: sensors.home.bedroom_sensor.Temperature.min
@@ -203,29 +309,32 @@ class MQTTBridge:
                 if 'sensor_name' in data:
                     sensor_name_friendly = data['sensor_name'].replace(' ', '_').lower()
                     logger.info(f"Sensor {sensor_uid} identified as: {data['sensor_name']}")
-                    # Remove sensor_name from data dict so it's not processed as a metric
-                    data = {k: v for k, v in data.items() if k != 'sensor_name'}
+                
+                # Remove metadata fields from data dict so they're not processed as metrics
+                data = {k: v for k, v in data.items() if k != 'sensor_name'}
                 
                 # Process each sensor type (Temperature, Humidity, etc.)
                 for sensor_type, sensor_data in data.items():
                     if not isinstance(sensor_data, dict):
                         continue
                     
-                    # Check if this is a statistics format (has min/max/avg)
+                    # Statistics format - send min, max, avg as separate metrics
                     if any(k in sensor_data for k in ['min', 'max', 'avg']):
-                        # Statistics format - send min, max, avg as separate metrics
-                        timestamp = sensor_data.get('timestamp', int(time.time()))
+                        # Get main timestamp (defaults to current time if not provided)
+                        timestamp = sensor_data.get('ts', int(time.time()))
                         
                         # Sanitize sensor type name
                         sensor_key = sensor_type.replace(' ', '_')
                         
-                        # Send metrics with UID
+                        # Send metrics with UID - use specific timestamps (required for min/max)
                         for stat_type in ['min', 'max', 'avg']:
                             if stat_type in sensor_data:
                                 metric_path = f"{base_path}.{sensor_key}.{stat_type}"
                                 value = float(sensor_data[stat_type])
-                                self.graphite.send_metric(metric_path, value, timestamp)
-                                logger.info(f"Forwarded: {metric_path} = {value} @ {timestamp}")
+                                # Use specific timestamp for min/max (required), otherwise use main timestamp
+                                stat_ts = sensor_data.get(f'{stat_type}_ts', timestamp)
+                                self.graphite.send_metric(metric_path, value, stat_ts)
+                                logger.info(f"Forwarded: {metric_path} = {value} @ {stat_ts}")
                                 metrics_sent += 1
                         
                         # Also send with friendly name if provided
@@ -235,8 +344,9 @@ class MQTTBridge:
                                 if stat_type in sensor_data:
                                     metric_path = f"{base_friendly}.{sensor_key}.{stat_type}"
                                     value = float(sensor_data[stat_type])
-                                    self.graphite.send_metric(metric_path, value, timestamp)
-                                    logger.debug(f"Forwarded (friendly): {metric_path} = {value}")
+                                    stat_ts = sensor_data.get(f'{stat_type}_ts', timestamp)
+                                    self.graphite.send_metric(metric_path, value, stat_ts)
+                                    logger.debug(f"Forwarded (friendly): {metric_path} = {value} @ {stat_ts}")
                                     metrics_sent += 1
                     
                     elif isinstance(sensor_data, (int, float)):
@@ -252,27 +362,10 @@ class MQTTBridge:
                     logger.info(f"Sent {metrics_sent} metrics from sensor {display_name}")
                 
                 return None, None  # Already sent metrics
-            elif isinstance(data, (int, float)):
-                return base_path, float(data)
-        except json.JSONDecodeError:
-            pass
-        
-        # Try parsing as key=value
-        if '=' in payload:
-            try:
-                key, value = payload.split('=', 1)
-                return f"{base_path}.{key.strip()}", float(value.strip())
-            except ValueError:
-                pass
-        
-        # Try parsing as simple numeric value
-        try:
-            value = float(payload)
-            return base_path, value
-        except ValueError:
-            pass
-        
-        return None, None
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Invalid JSON payload: {e}")
+            return None, None
     
     def start(self):
         """Start the bridge"""

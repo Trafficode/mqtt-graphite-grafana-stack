@@ -32,6 +32,13 @@ sudo python3 -m venv $INSTALL_DIR/venv
 sudo $INSTALL_DIR/venv/bin/pip install --upgrade pip
 sudo $INSTALL_DIR/venv/bin/pip install -r $INSTALL_DIR/requirements.txt
 
+# Read configuration from config.json
+echo "Reading configuration from config.json..."
+MQTT_BROKER=$(python3 -c "import json; print(json.load(open('config.json'))['mqtt']['broker'])")
+MQTT_PORT=$(python3 -c "import json; print(json.load(open('config.json'))['mqtt']['port'])")
+MQTT_TOPIC_PREFIX=$(python3 -c "import json; print(json.load(open('config.json'))['mqtt']['topic_prefix'])")
+MQTT_TOPIC=$(python3 -c "import json; print(json.load(open('config.json'))['mqtt']['topic'])")
+
 # Create systemd service file
 echo "Creating systemd service..."
 sudo tee /etc/systemd/system/mqtt-graphite-bridge.service > /dev/null <<EOF
@@ -42,12 +49,12 @@ Wants=docker.service
 
 [Service]
 Type=simple
-User=$USER
+User=root
 WorkingDirectory=$INSTALL_DIR
-Environment="MQTT_BROKER=mqtt.example.com"
-Environment="MQTT_PORT=1883"
-Environment="MQTT_TOPIC_PREFIX=sensors/home"
-Environment="MQTT_TOPIC=+/data"
+Environment="MQTT_BROKER=$MQTT_BROKER"
+Environment="MQTT_PORT=$MQTT_PORT"
+Environment="MQTT_TOPIC_PREFIX=$MQTT_TOPIC_PREFIX"
+Environment="MQTT_TOPIC=$MQTT_TOPIC"
 Environment="GRAPHITE_HOST=localhost"
 Environment="GRAPHITE_PORT=2003"
 Environment="LOG_LEVEL=INFO"
