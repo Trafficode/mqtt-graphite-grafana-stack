@@ -9,6 +9,12 @@ data/
 # Configuration (contains sensitive data)
 config.json
 
+# Legacy wlab app
+legacy-wlab-app/web-viewer/config.json
+legacy-wlab-app/web-viewer/logs/
+legacy-wlab-app/wlabapp/**/*.pyc
+legacy-wlab-app/wlabapp/**/__pycache__/
+
 # Python
 __pycache__/
 *.py[cod]

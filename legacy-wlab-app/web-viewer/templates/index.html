@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+
+<html lang="en">
+
+<head>
+<meta charset="utf-8">
+
+<title>Weatherlab</title>
+
+<link rel="icon" href="static/images/column-chart-favicon.png?ver=1.4" 
+				 type="image/gif" sizes="16x16">
+
+<script 
+src="https://ajax.googleapis.com/ajax/libs/jquery/3.2.1/jquery.min.js?ver=1.4">
+</script>
+
+<link rel="stylesheet" type="text/css" 
+	  href="static/css/bootstrap.min.css?ver=1.4">
+<link rel="stylesheet" type="text/css" 
+	  href="static/css/theme.min.css?ver=1.4">
+
+<!-- Neccessary Libraries -->
+<script src="static/js/libraries/moment.js?ver=1.4"></script>
+<script src="static/js/libraries/moment-timezone.js?ver=1.4"></script>
+<script src="static/js/libraries/canvasjs.min.js?ver=1.4"></script>
+
+<!-- Application scripts -->
+<script src="static/js/wlabapp/common/suncal.js?ver=2.5"></script>
+<script src="static/js/wlabapp/common/series.js?ver=2.5"></script>
+<script src="static/js/wlabapp/common/dchart.js?ver=2.5"></script>
+<script src="static/js/wlabapp/common/mchart.js?ver=2.5"></script>
+<script src="static/js/wlabapp/common/ychart.js?ver=2.5"></script>
+<script src="static/js/wlabapp/common/legend.js?ver=2.5"></script>
+<script src="static/js/wlabapp/home.js?ver=2.5"></script>
+<script src="static/js/wlabapp/history.js?ver=2.5"></script>
+<script src="static/js/wlabapp/info.js?ver=2.5"></script>
+
+
+<script type="text/javascript">
+
+function onHomeClick() {
+	console.log("onHomeClick/");
+	document.getElementById("home_Tab").className="active";
+	document.getElementById("history_Tab").className="";
+	document.getElementById("info_Tab").className="";
+	home_createPage("workArea");
+	console.log("/onHomeClick");
+}
+
+function onHistoryClick() {
+	console.log("onHistoryClick/");
+	document.getElementById("home_Tab").className="";
+	document.getElementById("history_Tab").className="active";
+	document.getElementById("info_Tab").className="";
+	history_createPage("workArea");
+	console.log("/onHistoryClick");
+}
+
+function onInfoClick()	{
+	console.log("onInfoClick/");
+	document.getElementById("home_Tab").className="";
+	document.getElementById("history_Tab").className="";
+	document.getElementById("info_Tab").className="active";
+	info_createPage("workArea");
+	console.log("/onInfoClick");
+}
+
+$(document).ready(function()
+{
+    console.log("Bootstrap init/");
+	onHomeClick();
+    console.log("/Bootstrap init");
+});
+
+</script> <!-- SCRIPT ---------------------------------------------------- -->
+
+<style>
+	
+.logorect {
+    border-radius: 24px;
+    background: #009933;
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+.navbar {
+    padding-top: 12px;
+    padding-bottom: 12px;
+}
+
+</style> <!-- STYLE END -------------------------------------------------- -->
+
+
+</head>
+
+<body>
+	<nav class="navbar navbar-default navbar-fixed-top">
+		<div class="container-fluid">
+	        <div class="navbar-header">
+	            <a class="navbar-brand">			       
+		            <font size="7" color="#269287">
+		            	<strong>Weather</strong>
+		            </font>
+		            <font size="7" color="#ecb93d">
+		            	<span class="logorect"><strong>°LAB</strong></span>
+		            </font>
+	      		</a>
+	        </div>
+	       	
+	        <div class="collapse navbar-collapse" id="mainNavbar">
+		        <ul class="nav navbar-nav">
+	                <li id="home_Tab" onclick="onHomeClick()">
+	                <a href="#"><dt>HOME</dt></a></li>
+	                
+	                <li id="history_Tab" onclick="onHistoryClick()">
+	                <a href="#"><dt>HISTORY</dt></a></li>
+	                
+	                <li id="info_Tab" onclick="onInfoClick()">
+	                <a href="#"><dt>INFO</dt></a></li>
+		        </ul>
+	        </div>
+	    </div>
+	</nav>
+	
+	<div class="container-fluid" style="margin-top:92px">
+	    <div class="col-sm-1">
+	    </div>	    
+	    <div class="col-sm-10" id="workArea">
+	    </div>	    
+	    <div class="col-sm-1">
+	    </div>
+	</div>
+<body>
+
+
+

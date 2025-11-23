@@ -106,6 +106,9 @@ class MQTTBridge:
         # Legacy binary topic is always constant (no prefix)
         self.legacy_bin_topic = "/wlabdb/bin"
         
+        # Legacy JSON topic for old devices like MAKRO
+        self.legacy_json_topic = "/wlabdb"
+        
         # Set up MQTT callbacks
         self.mqtt_client.on_connect = self.on_connect
         self.mqtt_client.on_message = self.on_message
@@ -126,7 +129,10 @@ class MQTTBridge:
             logger.info(f"Subscribed to topic: {self.full_topic}")
             # Subscribe to legacy binary topic
             client.subscribe(self.legacy_bin_topic)
-            logger.info(f"Subscribed to legacy topic: {self.legacy_bin_topic}")
+            logger.info(f"Subscribed to legacy binary topic: {self.legacy_bin_topic}")
+            # Subscribe to legacy JSON topic
+            client.subscribe(self.legacy_json_topic)
+            logger.info(f"Subscribed to legacy JSON topic: {self.legacy_json_topic}")
         else:
             logger.error(f"Failed to connect to MQTT broker, return code: {rc}")
     
@@ -143,6 +149,11 @@ class MQTTBridge:
             # Check if this is a legacy binary message
             if topic == self.legacy_bin_topic:
                 self.parse_legacy_binary(msg.payload)
+                return
+            
+            # Check if this is a legacy JSON message from /wlabdb
+            if topic == self.legacy_json_topic:
+                self.parse_legacy_json(msg.payload.decode('utf-8'))
                 return
             
             payload = msg.payload.decode('utf-8')
@@ -199,6 +210,13 @@ class MQTTBridge:
                 
                 # Parse binary packet
                 uid = "%02X%02X%02X%02X%02X%02X" % (packet[6], packet[5], packet[4], packet[3], packet[2], packet[1])
+                
+                # Skip ZLOCIEN and KRAKERS devices (removed from system)
+                if uid in ['31AB0F224FDC', 'A020A61259E8']:
+                    logger.debug(f"Skipping ignored device: {uid}")
+                    offset += version1_len
+                    continue
+                
                 ts = int(struct.unpack('<q', packet[7:15])[0])
                 
                 # Temperature (divide by 10)
@@ -238,6 +256,87 @@ class MQTTBridge:
                 
         except Exception as e:
             logger.error(f"Error parsing legacy binary message: {e}", exc_info=True)
+    
+    def parse_legacy_json(self, payload: str):
+        """
+        Parse legacy JSON format from old devices like MAKRO
+        
+        Expected format from mqttcatcher.py:
+        {
+          "UID": "48E729C88B0C",
+          "TS": 1234567890,
+          "SERIE": {
+            "Temperature": {
+              "f_avg": 22.5,
+              "f_act": 22.9,
+              "f_min": 12.9,
+              "f_max": 44.1,
+              "i_min_ts": 1234567800,
+              "i_max_ts": 1234567850
+            },
+            "Humidity": {
+              "f_avg": 60.5,
+              "f_act": 62.0,
+              "f_min": 45.0,
+              "f_max": 75.0,
+              "i_min_ts": 1234567800,
+              "i_max_ts": 1234567850
+            }
+          }
+        }
+        """
+        try:
+            data = json.loads(payload)
+            
+            uid = data.get('UID')
+            ts = data.get('TS', int(time.time()))
+            series = data.get('SERIE', {})
+            
+            if not uid:
+                logger.warning("Legacy JSON missing UID field")
+                return
+            
+            # Get device name from known devices
+            device_name = self.LEGACY_DEVICES.get(uid, uid)
+            sensor_key = f"{device_name.upper()}_{uid}"
+            base_path = f"monitoring_data.{sensor_key}"
+            
+            metrics_sent = 0
+            
+            # Process each serie (Temperature, Humidity)
+            for serie_name, serie_data in series.items():
+                if not isinstance(serie_data, dict):
+                    continue
+                
+                # Send min, max, avg metrics
+                if 'f_min' in serie_data and 'i_min_ts' in serie_data:
+                    self.graphite.send_metric(
+                        f"{base_path}.{serie_name}.min",
+                        float(serie_data['f_min']),
+                        serie_data['i_min_ts']
+                    )
+                    metrics_sent += 1
+                
+                if 'f_max' in serie_data and 'i_max_ts' in serie_data:
+                    self.graphite.send_metric(
+                        f"{base_path}.{serie_name}.max",
+                        float(serie_data['f_max']),
+                        serie_data['i_max_ts']
+                    )
+                    metrics_sent += 1
+                
+                if 'f_avg' in serie_data:
+                    self.graphite.send_metric(
+                        f"{base_path}.{serie_name}.avg",
+                        float(serie_data['f_avg']),
+                        ts
+                    )
+                    metrics_sent += 1
+            
+            logger.info(f"Forwarded legacy JSON data from {device_name} ({uid}): {metrics_sent} metrics")
+            
+        except Exception as e:
+            logger.error(f"Error parsing legacy JSON message: {e}", exc_info=True)
     
     def parse_message(self, topic: str, payload: str) -> tuple:
         """
@@ -292,11 +391,9 @@ class MQTTBridge:
         else:
             sensor_uid = 'unknown'
         
-        # Build base path with topic prefix
-        if self.topic_prefix:
-            base_path = self.topic_prefix.replace('/', '.') + '.' + sensor_uid
-        else:
-            base_path = sensor_uid
+        # Normalize UID format - remove underscores to match legacy format
+        # Example: 2C_CF_67_F1_23_B6 -> 2CCF67F123B6
+        sensor_uid = sensor_uid.replace('_', '').upper()
         
         # Try parsing as JSON
         try:
@@ -307,8 +404,15 @@ class MQTTBridge:
                 
                 # Check for optional sensor_name field
                 if 'sensor_name' in data:
-                    sensor_name_friendly = data['sensor_name'].replace(' ', '_').lower()
+                    sensor_name_friendly = data['sensor_name'].replace(' ', '_')
                     logger.info(f"Sensor {sensor_uid} identified as: {data['sensor_name']}")
+                else:
+                    # Use UID as name if no friendly name provided
+                    sensor_name_friendly = sensor_uid
+                
+                # Build base path using monitoring_data.NAME_UID format (consistent with legacy devices)
+                sensor_key = f"{sensor_name_friendly.upper()}_{sensor_uid}"
+                base_path = f"monitoring_data.{sensor_key}"
                 
                 # Remove metadata fields from data dict so they're not processed as metrics
                 data = {k: v for k, v in data.items() if k != 'sensor_name'}
@@ -324,42 +428,29 @@ class MQTTBridge:
                         timestamp = sensor_data.get('ts', int(time.time()))
                         
                         # Sanitize sensor type name
-                        sensor_key = sensor_type.replace(' ', '_')
+                        serie_key = sensor_type.replace(' ', '_')
                         
-                        # Send metrics with UID - use specific timestamps (required for min/max)
+                        # Send metrics with NAME_UID format
                         for stat_type in ['min', 'max', 'avg']:
                             if stat_type in sensor_data:
-                                metric_path = f"{base_path}.{sensor_key}.{stat_type}"
+                                metric_path = f"{base_path}.{serie_key}.{stat_type}"
                                 value = float(sensor_data[stat_type])
                                 # Use specific timestamp for min/max (required), otherwise use main timestamp
                                 stat_ts = sensor_data.get(f'{stat_type}_ts', timestamp)
                                 self.graphite.send_metric(metric_path, value, stat_ts)
                                 logger.info(f"Forwarded: {metric_path} = {value} @ {stat_ts}")
                                 metrics_sent += 1
-                        
-                        # Also send with friendly name if provided
-                        if sensor_name_friendly:
-                            base_friendly = self.topic_prefix.replace('/', '.') + '.' + sensor_name_friendly if self.topic_prefix else sensor_name_friendly
-                            for stat_type in ['min', 'max', 'avg']:
-                                if stat_type in sensor_data:
-                                    metric_path = f"{base_friendly}.{sensor_key}.{stat_type}"
-                                    value = float(sensor_data[stat_type])
-                                    stat_ts = sensor_data.get(f'{stat_type}_ts', timestamp)
-                                    self.graphite.send_metric(metric_path, value, stat_ts)
-                                    logger.debug(f"Forwarded (friendly): {metric_path} = {value} @ {stat_ts}")
-                                    metrics_sent += 1
                     
                     elif isinstance(sensor_data, (int, float)):
                         # Simple key-value format
-                        sensor_key = sensor_type.replace(' ', '_')
-                        metric_path = f"{base_path}.{sensor_key}"
+                        serie_key = sensor_type.replace(' ', '_')
+                        metric_path = f"{base_path}.{serie_key}"
                         self.graphite.send_metric(metric_path, float(sensor_data))
                         logger.info(f"Forwarded: {metric_path} = {sensor_data}")
                         metrics_sent += 1
                 
                 if metrics_sent > 0:
-                    display_name = f"{sensor_name_friendly} ({sensor_uid})" if sensor_name_friendly else sensor_uid
-                    logger.info(f"Sent {metrics_sent} metrics from sensor {display_name}")
+                    logger.info(f"Sent {metrics_sent} metrics from sensor {sensor_name_friendly} ({sensor_uid})")
                 
                 return None, None  # Already sent metrics
             

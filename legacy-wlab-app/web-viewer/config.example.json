@@ -1,0 +1,24 @@
+{
+  "graphite": {
+    "host": "localhost",
+    "port": 8040,
+    "protocol": "http",
+    "metric_prefix": "monitoring_data"
+  },
+  "web": {
+    "host": "0.0.0.0",
+    "port": 8050,
+    "debug": false,
+    "title": "WLab Data Viewer"
+  },
+  "logging": {
+    "level": "INFO",
+    "path": "./logs"
+  },
+  "legacy_devices": {
+    "110020FF0001": "Rodos",
+    "31AB0F224FDC": "Zlocien",
+    "48E729C88B0C": "Makro",
+    "A020A61259E8": "Krakers"
+  }
+}
