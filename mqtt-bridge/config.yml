@@ -1,0 +1,36 @@
+# MQTT Bridge Configuration
+# This file is optional - all settings can be provided via environment variables
+
+mqtt:
+  broker: mqtt.example.com
+  port: 1883
+  # Topic prefix (path before /UID/data)
+  topic_prefix: "sensors/home"
+  # Subscribe to all sensor data topics
+  # Pattern: {topic_prefix}/UID/data
+  # Or use specific pattern: "+/data" subscribes to all UIDs
+  topic: "+/data"
+  username: ""
+  password: ""
+
+graphite:
+  host: graphite
+  port: 2003
+
+# Expected MQTT payload format (JSON):
+# {
+#   "Temperature": {
+#     "timestamp": 1732233600,
+#     "unit": "C",
+#     "min": 12.9,
+#     "max": 44.1,
+#     "avg": 22.9
+#   },
+#   "Humidity": {
+#     "timestamp": 1732233600,
+#     "unit": "%",
+#     "min": 45.2,
+#     "max": 78.5,
+#     "avg": 65.0
+#   }
+# }

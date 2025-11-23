@@ -1,0 +1,46 @@
+services:
+  graphite:
+    image: graphiteapp/graphite-statsd:latest
+    container_name: graphite
+    restart: unless-stopped
+    ports:
+      - "8040:80"         # Graphite web interface
+      - "2003:2003"       # Carbon line receiver
+      - "2004:2004"       # Carbon pickle receiver
+      - "2023:2023"       # Carbon aggregator line receiver
+      - "2024:2024"       # Carbon aggregator pickle receiver
+      - "8125:8125/udp"   # StatsD UDP
+      - "8126:8126"       # StatsD admin
+    volumes:
+      - /mnt/nvme/monitoring-data/graphite:/opt/graphite/storage
+      - ./docker/graphite/carbon.conf:/opt/graphite/conf/carbon.conf
+      - ./docker/graphite/storage-schemas.conf:/opt/graphite/conf/storage-schemas.conf
+      - ./docker/graphite/storage-aggregation.conf:/opt/graphite/conf/storage-aggregation.conf
+    environment:
+      - GRAPHITE_TIME_ZONE=Europe/Warsaw
+    networks:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "8041:3000"
+    volumes:
+      - /mnt/nvme/monitoring-data/grafana:/var/lib/grafana
+      - ./docker/grafana/provisioning:/etc/grafana/provisioning
+    environment:
+      - GF_SECURITY_ADMIN_USER=${GF_SECURITY_ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD:-change_this_password}
+      - GF_INSTALL_PLUGINS=
+      - GF_SERVER_ROOT_URL=http://localhost:8041
+      - GF_USERS_ALLOW_SIGN_UP=false
+    depends_on:
+      - graphite
+    networks:
+      - monitoring
+
+networks:
+  monitoring:
+    driver: bridge

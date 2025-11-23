@@ -1,0 +1,33 @@
+{
+  "database": {
+    "base_path": "/opt/monitoring-data",
+    "graphite_path": "/opt/monitoring-data/graphite",
+    "grafana_path": "/opt/monitoring-data/grafana"
+  },
+  "graphite": {
+    "timezone": "Europe/Warsaw"
+  },
+  "grafana": {
+    "admin_user": "admin",
+    "admin_password": "change_this_password"
+  },
+  "mqtt": {
+    "broker": "mqtt.example.com",
+    "port": 1883,
+    "topic_prefix": "sensors/home",
+    "topic": "+/data",
+    "username": "",
+    "password": ""
+  },
+  "ports": {
+    "graphite_web": 8040,
+    "grafana": 8041,
+    "carbon_line": 2003,
+    "carbon_pickle": 2004
+  },
+  "raspberry_pi": {
+    "architecture": "arm64",
+    "device": "CM4",
+    "os": "debian_trixie"
+  }
+}

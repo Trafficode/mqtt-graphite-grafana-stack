@@ -1,0 +1,18 @@
+[Unit]
+Description=Daily Monitoring Database Backup Timer
+Documentation=https://github.com/Trafficode/mqtt-graphite-grafana-stack
+Requires=monitoring-backup.service
+
+[Timer]
+# Run every day at 2:00 AM
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+
+# Run 5 minutes after boot if missed
+OnBootSec=5min
+
+# Randomize start time by up to 5 minutes to avoid load spikes
+RandomizedDelaySec=5min
+
+[Install]
+WantedBy=timers.target

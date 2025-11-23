@@ -1,0 +1,24 @@
+{
+  "sensor_name": "Living Room Sensor",
+  "Temperature": {
+    "timestamp": 1732233600,
+    "unit": "C",
+    "min": 12.9,
+    "max": 44.1,
+    "avg": 22.9
+  },
+  "Humidity": {
+    "timestamp": 1732233600,
+    "unit": "%",
+    "min": 45.2,
+    "max": 78.5,
+    "avg": 65.0
+  },
+  "Pressure": {
+    "timestamp": 1732233600,
+    "unit": "hPa",
+    "min": 1010.5,
+    "max": 1013.2,
+    "avg": 1011.8
+  }
+}
