@@ -1,4 +1,546 @@
-# mqtt-graphite-grafana-stack
+# MQTT Graphite Grafana Stack
+
+Weather monitoring system with MQTT data collection, Graphite storage, and web visualization.
+
+## Overview
+
+This project refactors a legacy weather monitoring application to use modern components:
+
+- **Mosquitto MQTT Broker**: Local message broker for IoT device data
+- **MQTT-Graphite Bridge**: Service that forwards MQTT messages to Graphite with support for multiple data formats
+- **Graphite**: Time-series database for metric storage
+- **Flask Web Viewer**: Web interface serving original UI with Graphite backend
+
+## Architecture
+
+```
+Weather Stations
+    ↓ (MQTT)
+Mosquitto Broker (localhost:1883)
+    ↓
+MQTT-Graphite Bridge (systemd service)
+    ↓ (Carbon plaintext protocol)
+Graphite (Docker, port 8040)
+    ↑
+Flask Web Viewer (port 8050)
+    ↓
+Web Browser (Original UI)
+```
+
+## Components
+
+### 1. Mosquitto MQTT Broker
+
+Local MQTT broker for receiving data from weather stations.
+
+**Location**: Installed system-wide via apt  
+**Port**: 1883  
+**Config**: `/etc/mosquitto/conf.d/local.conf`
+
+See [mosquitto/README.md](mosquitto/README.md) for detailed documentation.
+
+**Quick Start**:
+```bash
+# Check status
+sudo systemctl status mosquitto
+
+# View logs
+sudo journalctl -u mosquitto -f
+
+# Test connection
+mosquitto_sub -h localhost -t '#' -v
+```
+
+### 2. MQTT-Graphite Bridge
+
+Python service that subscribes to MQTT topics and forwards data to Graphite.
+
+**Location**: `/opt/mqtt-graphite-bridge/`  
+**Service**: `mqtt-graphite-bridge.service`  
+**Config**: `config.json` in workspace root
+
+**Supported Data Formats**:
+- **New JSON format**: Topic `wlab/graphite/+/data`
+- **Legacy binary format**: Topic `/wlabdb/bin` (RODOS station)
+- **Legacy JSON format**: Topic `/wlabdb` (MAKRO station)
+
+**Features**:
+- Device filtering (skips ZLOCIEN, KRAKERS)
+- UID normalization (removes underscores)
+- Consistent metric naming: `monitoring_data.NAME_UID.Serie.{min,max,avg}`
+
+**Active Stations**:
+- RODOS (110020FF0001) - Legacy binary format
+- MAKRO (48E729C88B0C) - Legacy JSON format
+- GRROD (2CCF67F123B6) - New JSON format
+
+See [mqtt-bridge/README.md](mqtt-bridge/README.md) for details.
+
+**Management**:
+```bash
+# Status
+sudo systemctl status mqtt-graphite-bridge
+
+# Restart after config changes
+sudo systemctl restart mqtt-graphite-bridge
+
+# View logs
+sudo journalctl -u mqtt-graphite-bridge -f
+
+# Update bridge code
+cp mqtt-bridge/bridge.py /opt/mqtt-graphite-bridge/
+sudo systemctl restart mqtt-graphite-bridge
+```
+
+### 3. Graphite
+
+Time-series database storing weather metrics.
+
+**Type**: Docker container (graphiteapp/graphite-statsd)  
+**Port**: 8040  
+**Metrics Format**: `monitoring_data.NAME_UID.Serie.{min,max,avg}`
+
+**Web Interface**: http://localhost:8040
+
+**Data Series**:
+- Serie 1: Temperature (°C)
+- Serie 2: Humidity (%)
+
+**Query Example**:
+```bash
+# Get RODOS temperature for last 24 hours
+curl "http://localhost:8040/render?target=monitoring_data.RODOS_110020FF0001.1.avg&from=-24h&format=json"
+```
+
+### 4. Flask Web Viewer
+
+Web application serving the original UI with Graphite backend.
+
+**Location**: `legacy-wlab-app/web-viewer/`  
+**Port**: 8050  
+**Framework**: Flask 3.0.0
+
+**Features**:
+- Original UI preserved (translated to English)
+- REST API compatible with original IPC interface
+- Real-time data from Graphite
+- Historical data (November 2025 full month)
+
+**Tabs**:
+- **HOME**: Current day temperature/humidity charts
+- **HISTORY**: Monthly and yearly charts
+- **INFO**: Station information and status
+
+**Run Manually**:
+```bash
+cd legacy-wlab-app/web-viewer
+python3 src/app.py
+```
+
+**Access**: http://localhost:8050
+
+## Installation
+
+### Prerequisites
+
+```bash
+# Update system
+sudo apt update
+
+# Install Python 3
+sudo apt install -y python3 python3-pip
+
+# Install Docker (for Graphite)
+curl -fsSL https://get.docker.com -o get-docker.sh
+sudo sh get-docker.sh
+```
+
+### 1. Install Mosquitto
+
+```bash
+sudo apt install -y mosquitto mosquitto-clients
+
+# Copy configuration
+sudo cp mosquitto/local.conf /etc/mosquitto/conf.d/
+
+# Restart service
+sudo systemctl restart mosquitto
+sudo systemctl enable mosquitto
+
+# Verify
+sudo systemctl status mosquitto
+```
+
+### 2. Start Graphite
+
+```bash
+docker run -d \
+  --name graphite \
+  --restart=always \
+  -p 8040:80 \
+  -p 2003-2004:2003-2004 \
+  -p 2023-2024:2023-2024 \
+  -p 8125:8125/udp \
+  -p 8126:8126 \
+  graphiteapp/graphite-statsd
+```
+
+### 3. Install MQTT-Graphite Bridge
+
+```bash
+# Install Python dependencies
+pip3 install paho-mqtt
+
+# Copy bridge to system location
+sudo mkdir -p /opt/mqtt-graphite-bridge
+sudo cp mqtt-bridge/bridge.py /opt/mqtt-graphite-bridge/
+sudo cp config.json /opt/mqtt-graphite-bridge/
+
+# Install systemd service
+sudo cp mqtt-bridge/install-mqtt-bridge.sh /opt/mqtt-graphite-bridge/
+cd /opt/mqtt-graphite-bridge
+sudo bash install-mqtt-bridge.sh
+
+# Start service
+sudo systemctl start mqtt-graphite-bridge
+sudo systemctl enable mqtt-graphite-bridge
+```
+
+### 4. Install Flask Web Viewer
+
+```bash
+# Install dependencies
+cd legacy-wlab-app/web-viewer
+pip3 install -r requirements.txt
+
+# Run manually (or install as systemd service)
+python3 src/app.py
+```
+
+## Configuration
+
+### MQTT Broker Settings
+
+Edit `/etc/mosquitto/conf.d/local.conf`:
+
+```conf
+listener 1883
+allow_anonymous true
+```
+
+### MQTT Bridge Settings
+
+Edit `config.json`:
+
+```json
+{
+  "mqtt": {
+    "broker": "localhost",
+    "port": 1883,
+    "topics": [
+      "wlab/graphite/+/data",
+      "/wlabdb/bin",
+      "/wlabdb"
+    ]
+  },
+  "graphite": {
+    "host": "localhost",
+    "port": 2003
+  }
+}
+```
+
+### Web Viewer Settings
+
+Edit `legacy-wlab-app/web-viewer/src/app.py`:
+
+```python
+GRAPHITE_URL = "http://localhost:8040"
+FLASK_PORT = 8050
+```
+
+## Data Import
+
+Historical data from legacy database can be imported:
+
+```bash
+# Import RODOS data
+cd scripts
+python3 import-humidity-data.py
+
+# Import MAKRO data
+python3 import-makro-data.py
+```
+
+**Data Source**: `/mnt/nvme/tmp/database/`  
+**Imported Period**: November 2025 (full month)  
+**Metrics Imported**:
+- RODOS: 9,762 Temperature + 9,762 Humidity
+- MAKRO: 9,405 Temperature + 9,405 Humidity
+
+## Monitoring
+
+### Check All Services
+
+```bash
+# Mosquitto
+sudo systemctl status mosquitto
+
+# Graphite (Docker)
+docker ps | grep graphite
+
+# MQTT Bridge
+sudo systemctl status mqtt-graphite-bridge
+
+# Web Viewer (if installed as service)
+sudo systemctl status wlab-web-viewer
+```
+
+### Monitor MQTT Messages
+
+```bash
+# All topics
+mosquitto_sub -h localhost -t '#' -v
+
+# Specific station
+mosquitto_sub -h localhost -t 'wlab/graphite/2CCF67F123B6/data' -v
+```
+
+### View Graphite Metrics
+
+```bash
+# List all metrics
+curl "http://localhost:8040/metrics/index.json"
+
+# Query specific metric
+curl "http://localhost:8040/render?target=monitoring_data.RODOS_110020FF0001.1.avg&from=-1h&format=json"
+```
+
+### Check Web Viewer
+
+```bash
+# Station list
+curl http://localhost:8050/restq/stations/desc
+
+# Latest data
+curl http://localhost:8050/restq/stations/newest
+
+# Monthly data
+curl "http://localhost:8050/restq/station/monthlyserie/RODOS_110020FF0001/1/2025/11"
+```
+
+## Troubleshooting
+
+### MQTT Bridge Not Receiving Data
+
+```bash
+# Check MQTT connection
+mosquitto_sub -h localhost -t '#' -v
+
+# Check bridge logs
+sudo journalctl -u mqtt-graphite-bridge -f
+
+# Restart bridge
+sudo systemctl restart mqtt-graphite-bridge
+```
+
+### No Data in Graphite
+
+```bash
+# Check Graphite is running
+docker ps | grep graphite
+
+# Check Carbon (Graphite receiver) is listening
+netstat -tlnp | grep 2003
+
+# Test manual write
+echo "test.metric 42 $(date +%s)" | nc localhost 2003
+```
+
+### Web Viewer Shows No Stations
+
+```bash
+# Check Graphite has data
+curl "http://localhost:8040/metrics/index.json" | grep monitoring_data
+
+# Check Flask logs
+cd legacy-wlab-app/web-viewer
+python3 src/app.py  # Run in foreground to see errors
+```
+
+### Historical Data Missing
+
+Run data import scripts:
+
+```bash
+cd scripts
+python3 import-humidity-data.py
+python3 import-makro-data.py
+```
+
+## Maintenance
+
+### Update MQTT Bridge
+
+After editing `mqtt-bridge/bridge.py`:
+
+```bash
+sudo cp mqtt-bridge/bridge.py /opt/mqtt-graphite-bridge/
+sudo systemctl restart mqtt-graphite-bridge
+```
+
+### Backup Graphite Data
+
+```bash
+# Backup Graphite volume
+docker exec graphite tar czf /tmp/whisper-backup.tar.gz /opt/graphite/storage/whisper/
+
+# Copy to host
+docker cp graphite:/tmp/whisper-backup.tar.gz ./graphite-backup-$(date +%Y%m%d).tar.gz
+```
+
+### Clear Retained MQTT Messages
+
+```bash
+# Clear specific topic
+mosquitto_pub -h localhost -t 'topic/path' -r -n
+
+# List retained messages
+mosquitto_sub -h localhost -t '#' --retained-only
+```
+
+### Remove Device Data from Graphite
+
+```bash
+# Access Graphite container
+docker exec -it graphite bash
+
+# Remove device metrics
+cd /opt/graphite/storage/whisper/monitoring_data/
+rm -rf DEVICE_NAME_UID/
+```
+
+## Project Structure
+
+```
+mqtt-graphite-grafana-stack/
+├── mosquitto/                    # Mosquitto MQTT broker
+│   ├── README.md                # Detailed documentation
+│   └── local.conf               # Configuration file
+├── mqtt-bridge/                 # MQTT to Graphite bridge
+│   ├── bridge.py               # Main bridge script
+│   ├── install-mqtt-bridge.sh  # Service installer
+│   └── README.md               # Bridge documentation
+├── legacy-wlab-app/            # Web viewer
+│   └── web-viewer/
+│       ├── src/
+│       │   └── app.py         # Flask application
+│       ├── static/            # JavaScript, CSS, images
+│       └── templates/         # HTML templates
+├── scripts/                    # Utility scripts
+│   ├── import-humidity-data.py
+│   └── import-makro-data.py
+├── config.json                # MQTT bridge configuration
+└── README.md                  # This file
+```
+
+## API Reference
+
+### REST Endpoints
+
+**Base URL**: http://localhost:8050
+
+#### Get Station List
+```
+GET /restq/stations/desc
+Response: {"RODOS_110020FF0001": {...}, ...}
+```
+
+#### Get Latest Data
+```
+GET /restq/stations/newest
+Response: {"RODOS_110020FF0001": {"1": {...}, "2": {...}}, ...}
+```
+
+#### Get Monthly Data
+```
+GET /restq/station/monthlyserie/<station_uid>/<serie>/<year>/<month>
+Example: /restq/station/monthlyserie/RODOS_110020FF0001/1/2025/11
+```
+
+#### Get Yearly Data
+```
+GET /restq/station/yearlyserie/<station_uid>/<serie>/<year>
+Example: /restq/station/yearlyserie/RODOS_110020FF0001/1/2025
+```
+
+#### Get Available Dates
+```
+GET /restq/stations/datatree
+Response: {"RODOS_110020FF0001": {"2025": {"11": [1,2,3,...,30]}}, ...}
+```
+
+### MQTT Topics
+
+#### New JSON Format
+```
+Topic: wlab/graphite/<UID>/data
+Payload: {"data": [{"serie": 1, "min": 20.5, "max": 21.2, "avg": 20.8}, ...]}
+```
+
+#### Legacy Binary Format
+```
+Topic: /wlabdb/bin
+Payload: Binary struct (RODOS station)
+```
+
+#### Legacy JSON Format
+```
+Topic: /wlabdb
+Payload: JSON with legacy structure (MAKRO station)
+```
+
+## Migration Notes
+
+### From Legacy App to New System
+
+The refactored system maintains the same UI/UX but with modern backend:
+
+**Before**:
+- Custom database
+- Direct MQTT integration in app
+- Python 2.7
+
+**After**:
+- Graphite database
+- Separate MQTT bridge service
+- Python 3
+- Original UI preserved
+
+**Changes Required for Devices**:
+- Update MQTT broker address from `194.42.111.14:1883` to `<raspberry-pi-ip>:1883`
+- No changes to data format needed (bridge supports all formats)
+
+## Performance
+
+**Mosquitto**: ~5-10 MB RAM, <1% CPU  
+**MQTT Bridge**: ~20-30 MB RAM, <1% CPU  
+**Graphite**: ~200-300 MB RAM, 5-10% CPU  
+**Flask**: ~40-50 MB RAM, <1% CPU (when idle)
+
+**Total**: ~300 MB RAM for full stack
+
+## License
+
+See LICENSE file.
+
+## Support
+
+For issues, check:
+1. Service logs: `sudo journalctl -u <service-name> -f`
+2. MQTT messages: `mosquitto_sub -h localhost -t '#' -v`
+3. Graphite data: http://localhost:8040
+4. Web viewer: http://localhost:8050
 
 Complete MQTT → Graphite → Grafana monitoring stack for Raspberry Pi CM4 with Docker.
 
