@@ -241,14 +241,40 @@ class MQTTBridge:
                 base_path = f"monitoring_data.{sensor_key}"
                 
                 # Send Temperature metrics
-                self.graphite.send_metric(f"{base_path}.Temperature.min", temp_min, ts + temp_min_ts_offset)
-                self.graphite.send_metric(f"{base_path}.Temperature.max", temp_max, ts + temp_max_ts_offset)
-                self.graphite.send_metric(f"{base_path}.Temperature.avg", temp_avg, ts)
+                # Use current time if any timestamp is in the future
+                import time
+                current_time = int(time.time())
+                temp_min_ts = ts + temp_min_ts_offset
+                temp_max_ts = ts + temp_max_ts_offset
+                temp_avg_ts = ts
+                
+                if temp_min_ts > current_time:
+                    temp_min_ts = current_time
+                if temp_max_ts > current_time:
+                    temp_max_ts = current_time
+                if temp_avg_ts > current_time:
+                    temp_avg_ts = current_time
+                    
+                self.graphite.send_metric(f"{base_path}.Temperature.min", temp_min, temp_min_ts)
+                self.graphite.send_metric(f"{base_path}.Temperature.max", temp_max, temp_max_ts)
+                self.graphite.send_metric(f"{base_path}.Temperature.avg", temp_avg, temp_avg_ts)
                 
                 # Send Humidity metrics
-                self.graphite.send_metric(f"{base_path}.Humidity.min", float(hum_min), ts + hum_min_ts_offset)
-                self.graphite.send_metric(f"{base_path}.Humidity.max", float(hum_max), ts + hum_max_ts_offset)
-                self.graphite.send_metric(f"{base_path}.Humidity.avg", float(hum_avg), ts)
+                # Use current time if any timestamp is in the future
+                hum_min_ts = ts + hum_min_ts_offset
+                hum_max_ts = ts + hum_max_ts_offset
+                hum_avg_ts = ts
+                
+                if hum_min_ts > current_time:
+                    hum_min_ts = current_time
+                if hum_max_ts > current_time:
+                    hum_max_ts = current_time
+                if hum_avg_ts > current_time:
+                    hum_avg_ts = current_time
+                    
+                self.graphite.send_metric(f"{base_path}.Humidity.min", float(hum_min), hum_min_ts)
+                self.graphite.send_metric(f"{base_path}.Humidity.max", float(hum_max), hum_max_ts)
+                self.graphite.send_metric(f"{base_path}.Humidity.avg", float(hum_avg), hum_avg_ts)
                 
                 logger.info(f"Forwarded legacy binary data from {device_name} ({uid}): 6 metrics")
                 
@@ -304,32 +330,42 @@ class MQTTBridge:
             metrics_sent = 0
             
             # Process each serie (Temperature, Humidity)
+            current_time = int(time.time())
             for serie_name, serie_data in series.items():
                 if not isinstance(serie_data, dict):
                     continue
                 
                 # Send min, max, avg metrics
                 if 'f_min' in serie_data and 'i_min_ts' in serie_data:
+                    min_ts = serie_data['i_min_ts']
+                    if min_ts > current_time:
+                        min_ts = current_time
                     self.graphite.send_metric(
                         f"{base_path}.{serie_name}.min",
                         float(serie_data['f_min']),
-                        serie_data['i_min_ts']
+                        min_ts
                     )
                     metrics_sent += 1
                 
                 if 'f_max' in serie_data and 'i_max_ts' in serie_data:
+                    max_ts = serie_data['i_max_ts']
+                    if max_ts > current_time:
+                        max_ts = current_time
                     self.graphite.send_metric(
                         f"{base_path}.{serie_name}.max",
                         float(serie_data['f_max']),
-                        serie_data['i_max_ts']
+                        max_ts
                     )
                     metrics_sent += 1
                 
                 if 'f_avg' in serie_data:
+                    avg_ts = ts
+                    if avg_ts > current_time:
+                        avg_ts = current_time
                     self.graphite.send_metric(
                         f"{base_path}.{serie_name}.avg",
                         float(serie_data['f_avg']),
-                        ts
+                        avg_ts
                     )
                     metrics_sent += 1
             
@@ -426,6 +462,7 @@ class MQTTBridge:
                     if any(k in sensor_data for k in ['min', 'max', 'avg']):
                         # Get main timestamp (defaults to current time if not provided)
                         timestamp = sensor_data.get('ts', int(time.time()))
+                        current_time = int(time.time())
                         
                         # Sanitize sensor type name
                         serie_key = sensor_type.replace(' ', '_')
@@ -437,6 +474,9 @@ class MQTTBridge:
                                 value = float(sensor_data[stat_type])
                                 # Use specific timestamp for min/max (required), otherwise use main timestamp
                                 stat_ts = sensor_data.get(f'{stat_type}_ts', timestamp)
+                                # Use current time if timestamp is in the future
+                                if stat_ts > current_time:
+                                    stat_ts = current_time
                                 self.graphite.send_metric(metric_path, value, stat_ts)
                                 logger.info(f"Forwarded: {metric_path} = {value} @ {stat_ts}")
                                 metrics_sent += 1
