@@ -614,7 +614,7 @@ class MonthlyChart	{
 	}
 	
 	/** function redraw
-	 * uid: station string uid
+	 * uid: station string uid (format: DEVICENAME_UID or just UID)
 	 * serie: "Temperature", "Humidity"
 	 * dt_str: "YYYY-MM"
 	 */
@@ -622,11 +622,17 @@ class MonthlyChart	{
 	{
 		console.log("redraw("+uid+", "+serie+", "+dt_str+")");
 		
+		// Extract short UID from device_name_uid format (e.g., "RODOS_110020FF0001" -> "110020FF0001")
+		var shortUid = uid.includes("_") ? uid.split("_").slice(1).join("_") : uid;
+		
+		// Convert serie name to serie ID for API call
+		var serieId = this.__desc[shortUid]["serie"][serie];
+		
 		var self = this;
 		self.__unvisible_counter = 0;
 		var param = JSON.stringify({
 			"uid": uid, 
-			"serie": serie, 
+			"serie": serieId, 
 			"date": dt_str
 		});
 		
@@ -642,11 +648,11 @@ class MonthlyChart	{
 				self.__mchart_general = 
 								self._create_mchart_general_template(self);
 				
-				var serieId = self.__desc[uid]["serie"][serie];
-				var stationTz = self.__desc[uid]["timezone"];
-        		var serieUnit = serie_getUnit(self.__desc[uid]["serie"][serie]);
+				var serieId = self.__desc[shortUid]["serie"][serie];
+				var stationTz = self.__desc[shortUid]["timezone"];
+        		var serieUnit = serie_getUnit(self.__desc[shortUid]["serie"][serie]);
         		self.__currSerie = serie;
-        		self.__currUid = uid;
+        		self.__currUid = shortUid;
         		
         		/* Monthly days chart create */
         		if(serie == "Humidity") {
@@ -661,7 +667,7 @@ class MonthlyChart	{
         								return e.value.toFixed(1)+serieUnit;
         							};
         		self.__mchart.options.axisY.stripLines = 
-        				serie_getLabelColors(self.__desc[uid]["serie"][serie]);
+        				serie_getLabelColors(self.__desc[shortUid]["serie"][serie]);
         		
         		var mchartSerie = self._parse_mdata(self,monthlyData,serieId);
         		self.__monthlyParsed = mchartSerie;
@@ -688,7 +694,7 @@ class MonthlyChart	{
 				self.__mchart_general.options.data = generalSample;
 				
 				var serieUnit = serie_getUnit(
-									self.__desc[uid]["serie"][serie]);
+									self.__desc[shortUid]["serie"][serie]);
 				self.__mchart_general.options.toolTip.content = 
 									"{label}: {y}"+serieUnit;
 				self.__mchart_general.render();

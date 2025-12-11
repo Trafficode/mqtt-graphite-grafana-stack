@@ -174,9 +174,13 @@ function _home_updateOverview() {
 	_home_ovUpdateDesc();
 	
 	var dt = __home_currStationNfo["dt"].split("-");
+	var uid = __home_currStationNfo["uid"];
+	var device_name_uid = __home_stationsDesc[uid]["name"] + "_" + uid;
+	var serieName = __home_currStationNfo["serie"];
+	var serieId = __home_stationsDesc[uid]["serie"][serieName];
 	var param = JSON.stringify({
-		"uid": __home_currStationNfo["uid"], 
-		"serie": __home_currStationNfo["serie"], 
+		"uid": device_name_uid, 
+		"serie": serieId, 
 		"date": dt[0]+"-"+dt[1],
 	});
 	$.ajax({
@@ -245,6 +249,14 @@ function _home_ovUpdateDailyData() {
 	var serieId = __home_stationsDesc[uid]["serie"]
 										  [__home_currStationNfo["serie"]];
 	var serieUnit = serie_getUnit(serieId);
+	
+	// Check if data exists for current day
+	if (!__home_monthlyData[currDay]) {
+		console.warn("No data for day: " + currDay);
+		console.log("Available days:", Object.keys(__home_monthlyData));
+		return;
+	}
+	
 	var dayAvg = (__home_monthlyData[currDay]["f_avg_buff"]/
 		  __home_monthlyData[currDay]["i_counter"]).toFixed(1).toString();
 	var dayMin = __home_monthlyData[currDay]["f_min"].toFixed(1).toString();
@@ -322,9 +334,11 @@ function _home_onNextBtnClick() {
 		splited = __home_currStationNfo["dt"].split("-");
 		
 		dt = splited[0]+"-"+splited[1]+"-"+__home_ovNextDay;
+		var uid = __home_currStationNfo["uid"];
+		var device_name_uid = __home_stationsDesc[uid]["name"] + "_" + uid;
 		
 		__home_currStationNfo["dt"] = dt;
-		__home_dailyChart.redraw( __home_currStationNfo["uid"],
+		__home_dailyChart.redraw( device_name_uid,
 								  __home_currStationNfo["serie"],
 								  dt);
 		
@@ -333,6 +347,7 @@ function _home_onNextBtnClick() {
 		console.log("nextDay " + __home_ovNextDay);
 		console.log("prevDay " + __home_ovPrevDay);
 		_home_ovUpdateMoveBtn();
+		_home_ovUpdateDailyData();
 	}else {
 		console.log("_home_onBackBtnClick no __home_ovNextDay");
 	}
@@ -344,9 +359,11 @@ function _home_onBackBtnClick() {
 		splited = __home_currStationNfo["dt"].split("-");
 		
 		dt = splited[0]+"-"+splited[1]+"-"+__home_ovPrevDay;
+		var uid = __home_currStationNfo["uid"];
+		var device_name_uid = __home_stationsDesc[uid]["name"] + "_" + uid;
 		
 		__home_currStationNfo["dt"] = dt;
-		__home_dailyChart.redraw( __home_currStationNfo["uid"],
+		__home_dailyChart.redraw( device_name_uid,
 								  __home_currStationNfo["serie"],
 								  dt);
 		
@@ -355,6 +372,7 @@ function _home_onBackBtnClick() {
 		console.log("nextDay " + __home_ovNextDay);
 		console.log("prevDay " + __home_ovPrevDay);
 		_home_ovUpdateMoveBtn();		
+		_home_ovUpdateDailyData();
 	} else {
 		console.log("_home_onBackBtnClick no __home_ovPrevDay");
 	}
@@ -531,16 +549,14 @@ function home_createPage(workArea) {
         											   null, null, null, null,
         											   null);
         			
-        			var splited = __home_currChartBtnId.split("_");
-        			__home_currStationNfo =  
-        			{ "uid":splited[0],"serie":splited[1],"dt":splited[2] };
-        			
-        			__home_dailyChart.redraw( splited[0],	/* UID */
-        									  splited[1],	/* SERIE */
-        									  splited[2]);	/* DT */
-        			
-        			_home_updateOverview();
-                    console.log("/_home_getStationsDailyData");
+			var splited = __home_currChartBtnId.split("_");
+			__home_currStationNfo =  
+			{ "uid":splited[0],"serie":splited[1],"dt":splited[2] };
+			var device_name_uid = __home_stationsDesc[splited[0]]["name"] + "_" + splited[0];
+			
+			__home_dailyChart.redraw( device_name_uid,	/* UID */
+									  splited[1],	/* SERIE */
+									  splited[2]);	/* DT */                    console.log("/_home_getStationsDailyData");
                 }
         	});            
         }

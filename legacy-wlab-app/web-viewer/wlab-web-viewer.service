@@ -1,0 +1,36 @@
+[Unit]
+Description=WLab Weather Viewer Web Service
+After=network.target graphite.service
+Wants=graphite.service
+
+[Service]
+Type=notify
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/wlab-web-viewer
+Environment="PATH=/opt/wlab-web-viewer/venv/bin:/usr/local/bin:/usr/bin:/bin"
+
+# Gunicorn configuration
+ExecStart=/opt/wlab-web-viewer/venv/bin/gunicorn \
+    --config /opt/wlab-web-viewer/gunicorn.conf.py \
+    --bind 0.0.0.0:8050 \
+    wsgi:app
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=0
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/wlab-web-viewer/logs
+
+# Resource limits
+LimitNOFILE=65536
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

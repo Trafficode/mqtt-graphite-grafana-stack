@@ -565,7 +565,7 @@ class DailyChart	{
 	}
 
 	/** function redraw
-	 * uid: station string uid
+	 * uid: station string uid (format: DEVICENAME_UID or just UID)
 	 * serie: "Temperature", "Humidity"
 	 * dt_str: "YYYY-MM-DD"
 	 */
@@ -574,12 +574,19 @@ class DailyChart	{
 		/* At start only one serie is visible */
 		this.__unvisible_counter = 3;
 		this.__currSerie = serie;
-		this.__currUid = uid;
+		
+		// Extract short UID from device_name_uid format (e.g., "RODOS_110020FF0001" -> "110020FF0001")
+		// If uid contains underscore, take the part after it, otherwise use as-is
+		var shortUid = uid.includes("_") ? uid.split("_").slice(1).join("_") : uid;
+		this.__currUid = shortUid;
+		
+		// Convert serie name to serie ID for API call
+		var serieId = this.__desc[shortUid]["serie"][serie];
 		
 		var self = this;
 		var param = JSON.stringify({
 			"uid": uid, 
-			"serie": serie, 
+			"serie": serieId, 
 			"date": dt_str
 		});
 		
@@ -597,8 +604,8 @@ class DailyChart	{
                 
                 self._set_chart_btn_type(self, "CANDLE");
         		
-        		var serieId=self.__desc[uid]["serie"][serie];
-        		var serieUnit=serie_getUnit(self.__desc[uid]["serie"][serie]);
+        		var serieId=self.__desc[shortUid]["serie"][serie];
+        		var serieUnit=serie_getUnit(self.__desc[shortUid]["serie"][serie]);
         		
         		var chartTitle = dt_str + " " + serie.toUpperCase();
         		self.__chart.options.title.text = chartTitle;
@@ -610,18 +617,18 @@ class DailyChart	{
         			
         		self.__chart.options.axisY.labelFormatter = function(e) 
         							{
-        								return e.value.toFixed(1)+serieUnit;
-        							};
+        						return e.value.toFixed(1)+serieUnit;
+        						};
         							
         		self.__chart.options.axisY.stripLines = 
-        				serie_getLabelColors(self.__desc[uid]["serie"][serie]);
+        				serie_getLabelColors(self.__desc[shortUid]["serie"][serie]);
         		
         		if(self.__draw_general == true) {
         			self.__chart_general = 
         								self._create_dchart_general_template();
         			
         			var generalSample = self._create_general_serie_data(
-        									self.__desc[uid]["timezone"],
+        									self.__desc[shortUid]["timezone"],
         									dailyData["general"], 
         									serieId);
         			
@@ -641,7 +648,7 @@ class DailyChart	{
 					self.__chart_general.options.data = generalSample;
 					
 					var serieUnit = serie_getUnit(
-										self.__desc[uid]["serie"][serie]);
+										self.__desc[shortUid]["serie"][serie]);
 					self.__chart_general.options.toolTip.content = 
 										"{label}: {y}"+serieUnit;
 					
@@ -651,7 +658,7 @@ class DailyChart	{
         		
         		if(self.__draw_table == true) {
         			self._create_table_body(self, dailyData, 
-        										  self.__desc[uid]["timezone"],
+        										  self.__desc[shortUid]["timezone"],
         										  serieId);
         		}
         		

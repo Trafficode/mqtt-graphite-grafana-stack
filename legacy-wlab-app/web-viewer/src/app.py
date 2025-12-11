@@ -3,11 +3,17 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta
+from functools import wraps
 from pathlib import Path
 from urllib.parse import unquote
 
 import requests
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, make_response
+from flask_caching import Cache
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
+# from flask_talisman import Talisman  # Disabled - incompatible with legacy UI inline scripts
+from prometheus_flask_exporter import PrometheusMetrics
 
 # Load configuration
 config_path = Path(__file__).parent.parent / "config.json"
@@ -36,6 +42,36 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__, 
             template_folder=str(Path(__file__).parent.parent / "templates"),
             static_folder=str(Path(__file__).parent.parent / "static"))
+
+# Production configuration
+app.config['JSON_SORT_KEYS'] = False
+app.config['JSONIFY_PRETTYPRINT_REGULAR'] = False
+
+# Caching configuration
+cache_config = {
+    "CACHE_TYPE": "simple",
+    "CACHE_DEFAULT_TIMEOUT": 60,  # 1 minute for most endpoints
+    "CACHE_THRESHOLD": 500
+}
+app.config.update(cache_config)
+cache = Cache(app)
+
+# Rate limiting configuration
+limiter = Limiter(
+    app=app,
+    key_func=get_remote_address,
+    default_limits=["200 per hour", "50 per minute"],
+    storage_uri="memory://"
+)
+
+# Security headers disabled for legacy UI compatibility
+# The legacy UI uses inline scripts and external CDN resources
+# For production, consider using a reverse proxy (nginx) for security headers
+# or refactor the UI to eliminate inline scripts
+
+# Prometheus metrics
+metrics = PrometheusMetrics(app)
+metrics.info('wlab_viewer_info', 'WLab Weather Viewer', version='2.0.0-graphite')
 
 # Graphite configuration
 GRAPHITE_URL = f"{config['graphite']['protocol']}://{config['graphite']['host']}:{config['graphite']['port']}"
@@ -91,7 +127,31 @@ def index():
     return render_template("index.html", title="Weatherlab")
 
 
+@app.route("/health")
+@limiter.exempt
+def health():
+    """Health check endpoint for monitoring and load balancers."""
+    try:
+        # Check Graphite connectivity
+        response = requests.get(f"{GRAPHITE_URL}/metrics/index.json", timeout=5)
+        graphite_status = "healthy" if response.status_code == 200 else "unhealthy"
+    except:
+        graphite_status = "unhealthy"
+    
+    status = {
+        "status": "healthy" if graphite_status == "healthy" else "degraded",
+        "timestamp": datetime.now().isoformat(),
+        "version": "2.0.0-graphite",
+        "services": {
+            "graphite": graphite_status
+        }
+    }
+    
+    return jsonify(status), 200 if status["status"] == "healthy" else 503
+
+
 @app.route("/globals/version")
+@cache.cached(timeout=300)
 def wlabversion():
     """Version endpoint (for compatibility)."""
     logger.info("wlabversion()")
@@ -103,6 +163,7 @@ def wlabversion():
 
 
 @app.route("/restq/stations/desc")
+@cache.cached(timeout=60)
 def stations_desc():
     """Get station descriptions from Graphite metrics."""
     logger.info("stations_desc()")
@@ -260,17 +321,32 @@ def station_dailyserie(uid_serie_date):
     # URL decode the parameter
     uid_serie_date = unquote(uid_serie_date)
     param = json.loads(uid_serie_date)
-    uid = param["uid"]
-    serie = param["serie"]
+    device_name_uid = param["uid"]  # May be "DEVICENAME_UID" or just "UID"
+    serie_id = param["serie"]  # This is a string like "1" or "2"
     date_str = param["date"]  # Format: YYYY-MM-DD
     
-    # Find device name
+    # Extract short UID from device_name_uid format (e.g., "RODOS_110020FF0001" -> "110020FF0001")
+    # If contains underscore, take everything after first underscore
+    uid = device_name_uid.split("_", 1)[1] if "_" in device_name_uid else device_name_uid
+    
+    # Find device name and convert serie ID to serie name
     desc_response = get_stations_desc()
     if uid not in desc_response:
         return jsonify({})
     
     name = desc_response[uid]["name"]
     device_name_uid = f"{name}_{uid}"
+    
+    # Convert serie ID (1,2) to serie name (Temperature, Humidity)
+    serie_name = None
+    for s_name, s_id in desc_response[uid]["serie"].items():
+        if str(s_id) == str(serie_id):
+            serie_name = s_name
+            break
+    
+    if not serie_name:
+        logger.warning(f"Serie ID {serie_id} not found for {uid}")
+        return jsonify({})
     
     # Parse date and create time range for the day
     try:
@@ -280,12 +356,12 @@ def station_dailyserie(uid_serie_date):
     except:
         return jsonify({})
     
-    # Query all three stats separately
-    min_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie}.min", 
+    # Query all three stats separately using serie name
+    min_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie_name}.min", 
                               from_time=str(from_time), until_time=str(until_time))
-    max_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie}.max", 
+    max_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie_name}.max", 
                               from_time=str(from_time), until_time=str(until_time))
-    avg_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie}.avg", 
+    avg_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie_name}.avg", 
                               from_time=str(from_time), until_time=str(until_time))
     
     result = {}
@@ -381,17 +457,31 @@ def station_monthlyserie(uid_serie_date):
     # URL decode the parameter
     uid_serie_date = unquote(uid_serie_date)
     param = json.loads(uid_serie_date)
-    uid = param["uid"]
-    serie = param["serie"]
+    device_name_uid = param["uid"]  # May be "DEVICENAME_UID" or just "UID"
+    serie_id = param["serie"]  # This is a string like "1" or "2"
     date_str = param["date"]  # Format: YYYY-MM
     
-    # Find device name
+    # Extract short UID from device_name_uid format (e.g., "RODOS_110020FF0001" -> "110020FF0001")
+    uid = device_name_uid.split("_", 1)[1] if "_" in device_name_uid else device_name_uid
+    
+    # Find device name and convert serie ID to serie name
     desc_response = get_stations_desc()
     if uid not in desc_response:
         return jsonify({})
     
     name = desc_response[uid]["name"]
     device_name_uid = f"{name}_{uid}"
+    
+    # Convert serie ID to serie name
+    serie_name = None
+    for s_name, s_id in desc_response[uid]["serie"].items():
+        if str(s_id) == str(serie_id):
+            serie_name = s_name
+            break
+    
+    if not serie_name:
+        logger.warning(f"Serie ID {serie_id} not found for {uid}")
+        return jsonify({})
     
     # Parse date and get month range
     try:
@@ -410,13 +500,13 @@ def station_monthlyserie(uid_serie_date):
     
     # Query entire month at once with summarize by day
     min_data = query_graphite(
-        f"summarize({METRIC_PREFIX}.{device_name_uid}.{serie}.min, '1d', 'min')",
+        f"summarize({METRIC_PREFIX}.{device_name_uid}.{serie_name}.min, '1d', 'min')",
         from_time=str(from_time), until_time=str(until_time))
     max_data = query_graphite(
-        f"summarize({METRIC_PREFIX}.{device_name_uid}.{serie}.max, '1d', 'max')",
+        f"summarize({METRIC_PREFIX}.{device_name_uid}.{serie_name}.max, '1d', 'max')",
         from_time=str(from_time), until_time=str(until_time))
     avg_data = query_graphite(
-        f"summarize({METRIC_PREFIX}.{device_name_uid}.{serie}.avg, '1d', 'avg')",
+        f"summarize({METRIC_PREFIX}.{device_name_uid}.{serie_name}.avg, '1d', 'avg')",
         from_time=str(from_time), until_time=str(until_time))
     
     # Organize by day number
@@ -450,7 +540,7 @@ def station_monthlyserie(uid_serie_date):
     
     # Process avg data - need to get raw values to calculate f_avg_buff
     raw_avg_data = query_graphite(
-        f"{METRIC_PREFIX}.{device_name_uid}.{serie}.avg",
+        f"{METRIC_PREFIX}.{device_name_uid}.{serie_name}.avg",
         from_time=str(from_time), until_time=str(until_time))
     
     if raw_avg_data and len(raw_avg_data) > 0:
@@ -499,17 +589,31 @@ def station_yearlyserie(uid_serie_date):
     # URL decode the parameter
     uid_serie_date = unquote(uid_serie_date)
     param = json.loads(uid_serie_date)
-    uid = param["uid"]
-    serie = param["serie"]
+    device_name_uid = param["uid"]  # May be "DEVICENAME_UID" or just "UID"
+    serie_id = param["serie"]  # This is a string like "1" or "2"
     date_str = param["date"]  # Format: YYYY
     
-    # Find device name
+    # Extract short UID from device_name_uid format (e.g., "RODOS_110020FF0001" -> "110020FF0001")
+    uid = device_name_uid.split("_", 1)[1] if "_" in device_name_uid else device_name_uid
+    
+    # Find device name and convert serie ID to serie name
     desc_response = get_stations_desc()
     if uid not in desc_response:
         return jsonify({})
     
     name = desc_response[uid]["name"]
     device_name_uid = f"{name}_{uid}"
+    
+    # Convert serie ID to serie name
+    serie_name = None
+    for s_name, s_id in desc_response[uid]["serie"].items():
+        if str(s_id) == str(serie_id):
+            serie_name = s_name
+            break
+    
+    if not serie_name:
+        logger.warning(f"Serie ID {serie_id} not found for {uid}")
+        return jsonify({})
     
     # Parse date and create time range for the year
     try:
@@ -520,11 +624,11 @@ def station_yearlyserie(uid_serie_date):
         return jsonify({})
     
     # Query all three stats separately
-    min_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie}.min", 
+    min_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie_name}.min", 
                               from_time=str(from_time), until_time=str(until_time))
-    max_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie}.max", 
+    max_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie_name}.max", 
                               from_time=str(from_time), until_time=str(until_time))
-    avg_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie}.avg", 
+    avg_data = query_graphite(f"{METRIC_PREFIX}.{device_name_uid}.{serie_name}.avg", 
                               from_time=str(from_time), until_time=str(until_time))
     
     result = {}
@@ -700,13 +804,68 @@ def stations_datatree():
     return response
 
 
+# Error handlers
+@app.errorhandler(404)
+def not_found(error):
+    """Handle 404 errors."""
+    logger.warning(f"404 Not Found: {request.url}")
+    return jsonify({
+        "error": "Not Found",
+        "message": "The requested resource was not found",
+        "status": 404
+    }), 404
+
+
+@app.errorhandler(500)
+def internal_error(error):
+    """Handle 500 errors."""
+    logger.error(f"500 Internal Server Error: {error}")
+    return jsonify({
+        "error": "Internal Server Error",
+        "message": "An internal error occurred",
+        "status": 500
+    }), 500
+
+
+@app.errorhandler(429)
+def ratelimit_handler(error):
+    """Handle rate limit errors."""
+    logger.warning(f"Rate limit exceeded: {get_remote_address()}")
+    return jsonify({
+        "error": "Too Many Requests",
+        "message": "Rate limit exceeded. Please try again later.",
+        "status": 429
+    }), 429
+
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    """Handle all unhandled exceptions."""
+    logger.exception(f"Unhandled exception: {error}")
+    
+    # Don't expose internal errors in production
+    if config["web"].get("debug", False):
+        message = str(error)
+    else:
+        message = "An unexpected error occurred"
+    
+    return jsonify({
+        "error": "Internal Server Error",
+        "message": message,
+        "status": 500
+    }), 500
+
+
 if __name__ == "__main__":
     logger.info(f"Starting WLab Web Viewer (Original UI + Graphite Backend)")
     logger.info(f"Graphite: {GRAPHITE_URL}")
     logger.info(f"Web: http://{config['web']['host']}:{config['web']['port']}")
+    logger.warning("Using Flask development server - not suitable for production!")
+    logger.warning("Use Gunicorn for production: gunicorn -c gunicorn.conf.py wsgi:app")
     
     app.run(
         host=config["web"]["host"],
         port=config["web"]["port"],
         debug=config["web"]["debug"]
     )
+
